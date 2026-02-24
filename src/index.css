@@ -1,0 +1,7 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+TC:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Noto Sans TC", "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Noto Sans TC", "Manrope", ui-sans-serif, system-ui, sans-serif;
+}
