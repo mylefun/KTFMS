@@ -1,40 +1,41 @@
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { Modal } from "@/components/Modal";
 import { ImportModal, ImportRowStatus } from "@/components/ImportModal";
 import {
   Download, Plus, Search, Calendar, ChevronDown, Upload,
   MoreVertical, Info, X, CheckCircle2, AlertTriangle,
-  ChevronLeft, ChevronRight, Loader2, Pencil, Trash2,
+  ChevronLeft, ChevronRight, Loader2, Pencil, Trash2, ArrowUpDown, ChevronUp,
 } from "lucide-react";
-import { useState, useEffect, useCallback, useRef } from "react";
 import { cn } from "@/utils/cn";
 import { supabase } from "@/lib/supabase";
-import type { Receipt } from "@/types/database";
+import type { Receipt, Donor } from "@/types/database";
+import { useAuth } from "@/contexts/AuthContext";
 
 // ─── Constants ───────────────────────────────────────────────
-const CATEGORIES = ["光明燈", "平安燈", "一般捐款", "法會收入", "其他"];
+const CATEGORIES = ["光明燈", "平安燈", "其他收入", "法會收入", "其他"];
 const PAYMENT_METHODS = ["現金", "轉帳", "匯款", "其他"];
 const CATEGORY_STYLES: Record<string, { bg: string; text: string; dot: string }> = {
   "光明燈": { bg: "bg-purple-100 dark:bg-purple-900/30", text: "text-purple-700 dark:text-purple-300", dot: "bg-purple-500" },
   "平安燈": { bg: "bg-blue-100 dark:bg-blue-900/30", text: "text-blue-700 dark:text-blue-300", dot: "bg-blue-500" },
-  "一般捐款": { bg: "bg-orange-100 dark:bg-orange-900/30", text: "text-orange-700 dark:text-orange-300", dot: "bg-orange-500" },
+  "其他收入": { bg: "bg-orange-100 dark:bg-orange-900/30", text: "text-orange-700 dark:text-orange-300", dot: "bg-orange-500" },
   "法會收入": { bg: "bg-green-100 dark:bg-green-900/30", text: "text-green-700 dark:text-green-300", dot: "bg-green-500" },
   "其他": { bg: "bg-slate-100 dark:bg-slate-800", text: "text-slate-600 dark:text-slate-400", dot: "bg-slate-400" },
 };
-const FILTER_TABS = ["所有收據", ...CATEGORIES, "已作廢"];
 const PAGE_SIZE = 10;
 
 // ─── Form default ────────────────────────────────────────────
 const emptyForm = () => ({
   receipt_no: "",
   date: new Date().toISOString().split("T")[0],
+  donor_id: "" as string | null,
   donor_name: "",
   phone: "",
   address: "",
-  category: "光明燈",
+  category: "",
   amount: "",
   handler: "",
-  payment_method: "現金",
+  payment_method: "",
 });
 
 // ─── Field component ─────────────────────────────────────────
@@ -53,13 +54,15 @@ const inputCls = "w-full px-3 py-2.5 rounded-lg border border-slate-200 dark:bor
 
 // ─── Main component ───────────────────────────────────────────
 export default function Receipts() {
+  const { profile: currentProfile } = useAuth();
   // list state
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
-  const [activeTab, setActiveTab] = useState("所有收據");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+  const [sortColumn, setSortColumn] = useState<string>("date");
+  const [sortDirection, setSortDirection] = useState<boolean>(false); // false = desc, true = asc
 
   // import modal
   const [importOpen, setImportOpen] = useState(false);
@@ -76,6 +79,31 @@ export default function Receipts() {
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
+
+  // autocomplete
+  const [donorSuggestions, setDonorSuggestions] = useState<Donor[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const suggestionRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const fn = (e: MouseEvent) => { if (suggestionRef.current && !suggestionRef.current.contains(e.target as Node)) setShowSuggestions(false); };
+    document.addEventListener("mousedown", fn);
+    return () => document.removeEventListener("mousedown", fn);
+  }, []);
+
+  const fetchDonorSuggestions = async (val: string) => {
+    if (!val.trim()) {
+      setDonorSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+    const { data } = await supabase.from("donors")
+      .select("*")
+      .ilike("name", `%${val}%`)
+      .limit(5);
+    setDonorSuggestions(data || []);
+    setShowSuggestions((data || []).length > 0);
+  };
 
   // delete confirm
   const [deleteTarget, setDeleteTarget] = useState<Receipt | null>(null);
@@ -94,25 +122,29 @@ export default function Receipts() {
   const fetchReceipts = useCallback(async () => {
     setLoading(true);
     let q = supabase.from("receipts").select("*", { count: "exact" })
-      .order("date", { ascending: false })
+      .order(sortColumn, { ascending: sortDirection })
       .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
-    if (activeTab === "已作廢") q = q.eq("status", "voided");
-    else if (activeTab !== "所有收據") q = q.eq("category", activeTab).eq("status", "normal");
+    if (search.trim()) {
+      q = q.or(`receipt_no.ilike.%${search}%,donor_name.ilike.%${search}%,category.ilike.%${search}%`);
+    }
 
-    if (search.trim()) q = q.or(`receipt_no.ilike.%${search}%,donor_name.ilike.%${search}%`);
+    q = q.eq("status", "normal");
 
     const { data, count, error } = await q;
     if (!error) { setReceipts(data ?? []); setTotal(count ?? 0); }
     setLoading(false);
-  }, [activeTab, search, page]);
+  }, [search, page, sortColumn, sortDirection]);
 
   useEffect(() => { fetchReceipts(); }, [fetchReceipts]);
 
   // ── open add modal ─────────────────────────────────────────
   const openAdd = () => {
     setEditTarget(null);
-    setForm(emptyForm());
+    setForm({
+      ...emptyForm(),
+      handler: currentProfile?.email || "",
+    });
     setFormError("");
     setModalOpen(true);
   };
@@ -123,6 +155,7 @@ export default function Receipts() {
     setForm({
       receipt_no: r.receipt_no,
       date: r.date,
+      donor_id: r.donor_id || "",
       donor_name: r.donor_name,
       phone: r.phone ?? "",
       address: r.address ?? "",
@@ -140,7 +173,7 @@ export default function Receipts() {
   // ── save (add or edit) ─────────────────────────────────────
   const handleSave = async () => {
     if (!form.donor_name.trim() || !form.amount || !form.category) {
-      setFormError("請填寫必填欄位：捐款人姓名、科目、金額"); return;
+      setFormError("請填寫必填欄位：姓名、科目、金額"); return;
     }
     const amt = parseFloat(form.amount);
     if (isNaN(amt) || amt <= 0) { setFormError("金額必須為正數"); return; }
@@ -149,6 +182,7 @@ export default function Receipts() {
     const payload = {
       receipt_no: form.receipt_no.trim() || `REC-${Date.now()}`,
       date: form.date,
+      donor_id: form.donor_id || null,
       donor_name: form.donor_name.trim(),
       phone: form.phone.trim() || null,
       address: form.address.trim() || null,
@@ -160,8 +194,8 @@ export default function Receipts() {
     };
 
     const { error } = editTarget
-      ? await supabase.from("receipts").update(payload).eq("id", editTarget.id)
-      : await supabase.from("receipts").insert(payload);
+      ? await (supabase.from("receipts") as any).update(payload).eq("id", editTarget.id)
+      : await (supabase.from("receipts") as any).insert(payload);
 
     if (error) { setFormError(error.message); setSaving(false); return; }
     setModalOpen(false);
@@ -173,7 +207,7 @@ export default function Receipts() {
   const handleVoid = async () => {
     if (!selected || !voidReason.trim()) return;
     setVoidLoading(true);
-    await supabase.from("receipts").update({ status: "voided", void_reason: voidReason }).eq("id", selected.id);
+    await (supabase.from("receipts") as any).update({ status: "voided", void_reason: voidReason }).eq("id", selected.id);
     setDrawerOpen(false); setVoidReason(""); fetchReceipts(); setVoidLoading(false);
   };
 
@@ -188,8 +222,8 @@ export default function Receipts() {
   // ── handle import ──────────────────────────────────────────
   const validateImportRow = async (row: Record<string, string>): Promise<{ status: ImportRowStatus; reason?: string }> => {
     // 1. Check required fields
-    if (!row["捐款人"] || !row["科目"] || !row["金額"] || !row["日期"]) {
-      return { status: "error", reason: "缺少必填欄位 (捐款人/科目/金額/日期)" };
+    if (!row["姓名"] || !row["科目"] || !row["金額"] || !row["日期"]) {
+      return { status: "error", reason: "缺少必填欄位 (姓名/科目/金額/日期)" };
     }
     const amt = parseFloat(row["金額"]);
     if (isNaN(amt) || amt <= 0) return { status: "error", reason: "金額格式錯誤" };
@@ -199,40 +233,77 @@ export default function Receipts() {
     if (!dateRegex.test(row["日期"])) return { status: "error", reason: "日期格式應為 YYYY-MM-DD" };
 
     // 3. Duplicate check logic: exact receipt_no OR (same donor, date, category, amount)
-    let q = supabase.from("receipts").select("id").limit(1);
-
-    if (row["收據序號"]) {
-      const recNoMatches = await supabase.from("receipts").select("id").eq("receipt_no", row["收據序號"]).limit(1);
-      if (recNoMatches.data && recNoMatches.data.length > 0) return { status: "duplicate", reason: "已有相同收據序號" };
+    if (row["單據編號"]) {
+      const recNo = row["單據編號"].trim();
+      const { data: matches } = await supabase.from("receipts").select("id").eq("receipt_no", recNo).limit(1);
+      if (matches && matches.length > 0) return { status: "duplicate", reason: `編號 [${recNo}] 已存在` };
     }
 
-    q = q.eq("date", row["日期"])
-      .eq("donor_name", row["捐款人"])
+    const { data: signatureMatches } = await supabase.from("receipts")
+      .select("id")
+      .eq("date", row["日期"])
+      .eq("donor_name", row["姓名"])
       .eq("category", row["科目"])
-      .eq("amount", amt);
+      .eq("amount", amt)
+      .limit(1);
 
-    const { data } = await q;
-    if (data && data.length > 0) return { status: "duplicate", reason: "已有相同捐款紀錄" };
+    if (signatureMatches && signatureMatches.length > 0) return { status: "duplicate", reason: "已有相同收入紀錄" };
 
     return { status: "ready" };
   };
 
   const confirmImport = async (validRows: Record<string, string>[]) => {
-    const payloads = validRows.map(row => ({
-      receipt_no: row["收據序號"]?.trim() || `REC-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      date: row["日期"],
-      donor_name: row["捐款人"]?.trim(),
-      phone: row["電話"]?.trim() || null,
-      address: row["地址"]?.trim() || null,
-      category: row["科目"],
-      amount: parseFloat(row["金額"]),
-      handler: row["經手人"]?.trim() || null,
-      payment_method: row["付款方式"]?.trim() || "現金",
-      status: "normal" as const,
-    }));
+    const now = Date.now();
+
+    // 1. Fetch all donors to match
+    const { data: allDonors } = await supabase.from("donors").select("id, name, phone");
+    const normalize = (p: string | null) => p?.replace(/\D/g, "") || "";
+
+    const donorByFullKey = new Map<string, string>(); // "name|normPhone" -> id
+    const donorByNameOnly = new Map<string, string>(); // "name" -> id
+
+    (allDonors as Donor[] | null)?.forEach(d => {
+      const n = d.name.trim();
+      const p = normalize(d.phone);
+      if (!donorByFullKey.has(`${n}|${p}`)) donorByFullKey.set(`${n}|${p}`, d.id);
+      if (!donorByNameOnly.has(n)) donorByNameOnly.set(n, d.id);
+    });
+
+    const payloads = validRows.map((row, index) => {
+      const name = row["姓名"]?.trim() || "";
+      const rawPhone = row["電話"]?.trim() || "";
+      const normPhone = normalize(rawPhone);
+
+      const fullMatch = donorByFullKey.get(`${name}|${normPhone}`);
+      const nameMatch = donorByNameOnly.get(name);
+
+      // Prefer full match (name+phone), fallback to name-only
+      const matchedId = fullMatch || nameMatch || null;
+
+      return {
+        receipt_no: row["單據編號"]?.trim() || `REC-${now}-${index}-${Math.floor(Math.random() * 10000)}`,
+        date: row["日期"],
+        donor_id: matchedId,
+        donor_name: name,
+        phone: rawPhone || null,
+        address: row["地址"]?.trim() || null,
+        category: row["科目"],
+        amount: parseFloat(row["金額"]),
+        handler: row["經手人"]?.trim() || null,
+        payment_method: row["付款方式"]?.trim() || "現金",
+        status: "normal" as const,
+      };
+    });
 
     // Batch insert
-    await supabase.from("receipts").insert(payloads);
+    const { error } = await (supabase.from("receipts") as any).insert(payloads);
+    if (error) {
+      console.error("Import failed:", error);
+      throw error;
+    }
+
+    // Reset state to ensure visibility
+    setPage(1);
     fetchReceipts();
   };
 
@@ -241,6 +312,31 @@ export default function Receipts() {
   const voidedCount = receipts.filter(r => r.status === "voided").length;
   const totalIncome = receipts.filter(r => r.status === "normal").reduce((s, r) => s + r.amount, 0);
 
+  const handleExport = () => {
+    if (receipts.length === 0) return;
+    const headers = ["單據編號", "日期", "姓名", "科目", "金額", "經手人", "狀態", "付款方式", "備註"];
+    const rows = receipts.map(r => [
+      r.receipt_no,
+      r.date,
+      r.donor_name,
+      r.category,
+      r.amount,
+      r.handler || "",
+      r.status === "normal" ? "正常" : "已作廢",
+      r.payment_method || "",
+      r.void_reason || ""
+    ]);
+
+    const content = [headers, ...rows].map(row => row.join(",")).join("\n");
+    const blob = new Blob(["\uFEFF" + content], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.setAttribute("download", `income_export_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <div className="flex h-screen w-full bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans">
       <Sidebar />
@@ -248,25 +344,34 @@ export default function Receipts() {
 
         {/* ── Header ── */}
         <header className="flex-none bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-8 py-5 flex items-center justify-between z-20">
-          <div>
-            <h2 className="text-2xl font-bold text-slate-900 dark:text-white">收入與收據管理</h2>
-            <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">管理捐款、追蹤收據紀錄及處理作廢事宜。</p>
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-2 text-slate-500 text-sm">
+              <span>財務管理</span><ChevronRight className="w-4 h-4" /><span className="text-red-700 font-medium font-bold">收入管理</span>
+            </div>
+            <h2 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">收入管理系統</h2>
+            <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">管理寺廟各項收入來源、收據開立及往來對象紀錄。</p>
           </div>
-          <div className="flex gap-3">
+          <div className="flex items-center gap-3">
             <button
               onClick={() => setImportOpen(true)}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-medium text-sm transition-colors"
+              className="px-4 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold text-sm rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-all shadow-sm flex items-center gap-2"
             >
-              <Upload className="w-5 h-5" />匯入資料
+              <Download className="w-4 h-4" />
+              匯入資料
             </button>
-            <button className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-medium text-sm transition-colors">
-              <Download className="w-5 h-5" />匯出資料
+            <button
+              onClick={handleExport}
+              className="px-4 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold text-sm rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-all shadow-sm flex items-center gap-2"
+            >
+              <Upload className="w-4 h-4" />
+              匯出資料
             </button>
             <button
               onClick={openAdd}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-red-700 hover:bg-red-800 text-white font-bold text-sm shadow-sm transition-colors"
+              className="px-5 py-2.5 bg-red-700 hover:bg-red-800 text-white font-bold text-sm rounded-lg transition-all shadow-sm flex items-center gap-2"
             >
-              <Plus className="w-5 h-5" />新增收據
+              <Plus className="w-4 h-4" />
+              新增收入
             </button>
           </div>
         </header>
@@ -287,40 +392,58 @@ export default function Receipts() {
             ))}
           </div>
 
-          {/* ── Filters ── */}
-          <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 mb-6">
-            <div className="relative group w-full xl:w-80">
-              <Search className="absolute left-3 top-2.5 w-5 h-5 text-slate-400 group-focus-within:text-red-700 transition-colors" />
-              <input
-                className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-red-700/20 focus:border-red-700 transition-all text-sm outline-none"
-                placeholder="搜尋收據序號或捐款人姓名..."
-                value={search}
-                onChange={e => { setSearch(e.target.value); setPage(1); }}
-              />
+          <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col">
+            <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white/50 dark:bg-slate-900/50">
+              <h3 className="font-bold text-lg text-slate-800 dark:text-slate-200">收入明細紀錄</h3>
+              <div className="relative group w-full sm:w-80">
+                <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400 group-focus-within:text-red-700 transition-colors" />
+                <input
+                  type="text"
+                  placeholder="搜尋收入單號、姓名、科目..."
+                  value={search}
+                  onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                  className="w-full pl-10 pr-4 py-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs focus:ring-2 focus:ring-red-700/20 focus:border-red-700 outline-none transition-all placeholder:text-slate-400"
+                />
+              </div>
             </div>
-            <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-1 rounded-lg overflow-x-auto max-w-full gap-0.5">
-              {FILTER_TABS.map(tab => (
-                <button
-                  key={tab}
-                  onClick={() => { setActiveTab(tab); setPage(1); }}
-                  className={cn("px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-colors",
-                    activeTab === tab
-                      ? "bg-white dark:bg-slate-700 shadow-sm text-red-700 font-bold"
-                      : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
-                  )}
-                >{tab}</button>
-              ))}
-            </div>
-          </div>
-
-          {/* ── Table ── */}
-          <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-500 border-b border-slate-200 dark:border-slate-800">
-                  <tr>
-                    {["收據序號", "日期", "捐款人", "科目", "金額", "收款人", "狀態", "操作"].map((h, i) => (
-                      <th key={h} className={cn("px-5 py-4 font-semibold whitespace-nowrap", (i === 4 || i === 7) ? "text-right" : i === 6 ? "text-center" : "")}>{h}</th>
+                  <tr className="bg-slate-50/50 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400 text-[11px] font-bold uppercase tracking-wider border-b border-slate-200 dark:border-slate-800">
+                    {[
+                      { label: "單據編號", key: "receipt_no" },
+                      { label: "日期", key: "date" },
+                      { label: "姓名", key: "donor_name" },
+                      { label: "科目", key: "category" },
+                      { label: "金額", key: "amount", align: "right" },
+                      { label: "經手人", key: "handler" },
+                      { label: "狀態", key: "status", align: "center" },
+                      { label: "操作", key: null, align: "right" },
+                    ].map((h) => (
+                      <th
+                        key={h.label}
+                        onClick={() => {
+                          if (!h.key) return;
+                          if (sortColumn === h.key) setSortDirection(!sortDirection);
+                          else { setSortColumn(h.key); setSortDirection(false); }
+                        }}
+                        className={cn(
+                          "px-6 py-4 transition-colors",
+                          h.key && "cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700/50 hover:text-red-700",
+                          h.align === "right" ? "text-right" : h.align === "center" ? "text-center" : ""
+                        )}
+                      >
+                        <div className={cn("flex items-center gap-1.5", h.align === "right" ? "justify-end" : h.align === "center" ? "justify-center" : "")}>
+                          {h.label}
+                          {h.key && (
+                            sortColumn === h.key ? (
+                              sortDirection ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />
+                            ) : (
+                              <ArrowUpDown className="w-3 h-3 opacity-20" />
+                            )
+                          )}
+                        </div>
+                      </th>
                     ))}
                   </tr>
                 </thead>
@@ -451,7 +574,7 @@ export default function Receipts() {
 
               {/* Donor info */}
               <section>
-                <h4 className="text-xs uppercase tracking-wider font-bold text-slate-400 mb-3">捐款人資訊</h4>
+                <h4 className="text-xs uppercase tracking-wider font-bold text-slate-400 mb-3">人員資訊</h4>
                 <div className="bg-slate-50 dark:bg-slate-800 rounded-lg p-4 space-y-2.5">
                   {[["姓名", selected.donor_name], ["電話", selected.phone ?? "-"], ["地址", selected.address ?? "-"]].map(([l, v]) => (
                     <div key={l} className="flex justify-between">
@@ -522,21 +645,60 @@ export default function Receipts() {
       <Modal
         open={modalOpen}
         onClose={() => setModalOpen(false)}
-        title={editTarget ? "編輯收據" : "新增收據"}
-        subtitle={editTarget ? `修改 #${editTarget.receipt_no}` : "填寫以下欄位以新增收據"}
+        title={editTarget ? "編輯收入記錄" : "新增收入記錄"}
+        subtitle={editTarget ? `修改單據 #${editTarget.receipt_no}` : "填寫收入詳細資訊"}
         width="max-w-xl"
       >
         <div className="flex flex-col gap-4">
           <div className="grid grid-cols-2 gap-4">
-            <Field label="收據序號">
-              <input className={inputCls} placeholder="留空自動產生" value={form.receipt_no} onChange={e => setForm(f => ({ ...f, receipt_no: e.target.value }))} />
+            <Field label="單據編號">
+              <input
+                className={inputCls}
+                placeholder="留空自動產生"
+                value={form.receipt_no}
+                onChange={(e) => setForm({ ...form, receipt_no: e.target.value })}
+              />
             </Field>
             <Field label="日期" required>
               <input type="date" className={inputCls} value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} />
             </Field>
           </div>
-          <Field label="捐款人姓名" required>
-            <input className={inputCls} placeholder="王小明" value={form.donor_name} onChange={e => setForm(f => ({ ...f, donor_name: e.target.value }))} />
+          <Field label="姓名" required>
+            <div className="relative">
+              <input
+                className={inputCls}
+                placeholder="王小明"
+                value={form.donor_name}
+                onChange={e => {
+                  setForm(f => ({ ...f, donor_name: e.target.value, donor_id: null }));
+                  fetchDonorSuggestions(e.target.value);
+                }}
+                onFocus={() => { if (donorSuggestions.length > 0) setShowSuggestions(true); }}
+              />
+              {showSuggestions && (
+                <div ref={suggestionRef} className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl z-50 overflow-hidden">
+                  {donorSuggestions.map(d => (
+                    <button
+                      key={d.id}
+                      className="w-full text-left px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors flex flex-col"
+                      onClick={() => {
+                        setForm(f => ({
+                          ...f,
+                          donor_id: d.id,
+                          donor_name: d.name,
+                          phone: d.phone || f.phone,
+                          address: d.address || f.address,
+                        }));
+                        setShowSuggestions(false);
+                      }}
+                    >
+                      <span className="font-bold text-sm text-slate-900 dark:text-white">{d.name}</span>
+                      {d.phone && <span className="text-xs text-slate-500">{d.phone}</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </Field>
           <div className="grid grid-cols-2 gap-4">
             <Field label="電話">
@@ -544,7 +706,8 @@ export default function Receipts() {
             </Field>
             <Field label="付款方式">
               <select className={inputCls} value={form.payment_method} onChange={e => setForm(f => ({ ...f, payment_method: e.target.value }))}>
-                {PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}
+                <option value="">選擇付款方式</option>
+                {PAYMENT_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
               </select>
             </Field>
           </div>
@@ -554,7 +717,8 @@ export default function Receipts() {
           <div className="grid grid-cols-2 gap-4">
             <Field label="科目/種類" required>
               <select className={inputCls} value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}>
-                {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                <option value="">選擇科目</option>
+                {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </Field>
             <Field label="金額（元）" required>
@@ -573,19 +737,19 @@ export default function Receipts() {
             </button>
             <button onClick={handleSave} disabled={saving}
               className="flex-1 py-2.5 px-4 bg-red-700 hover:bg-red-800 disabled:opacity-60 text-white font-bold text-sm rounded-lg transition-colors">
-              {saving ? "儲存中..." : editTarget ? "儲存變更" : "新增收據"}
+              {saving ? "儲存中..." : editTarget ? "儲存變更" : "確認新增"}
             </button>
           </div>
         </div>
       </Modal>
 
       {/* ── Delete Confirm Modal ── */}
-      <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="確認刪除收據" width="max-w-sm">
+      <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="確認刪除記錄" width="max-w-sm">
         <div className="flex flex-col gap-4">
           <div className="flex items-center gap-3 p-4 bg-red-50 dark:bg-red-900/20 rounded-lg">
             <Trash2 className="w-5 h-5 text-red-600 flex-none" />
             <p className="text-sm text-slate-700 dark:text-slate-300">
-              確定要刪除 <strong>#{deleteTarget?.receipt_no}</strong>（{deleteTarget?.donor_name}）的收據嗎？此動作無法復原。
+              確定要刪除 <strong>#{deleteTarget?.receipt_no}</strong>（{deleteTarget?.donor_name}）的記錄嗎？此動作無法復原。
             </p>
           </div>
           <div className="flex gap-3">
@@ -604,10 +768,11 @@ export default function Receipts() {
       <ImportModal
         open={importOpen}
         onClose={() => setImportOpen(false)}
-        title="匯入收據資料"
-        expectedHeaders={["收據序號", "日期", "捐款人", "電話", "地址", "科目", "金額", "經手人", "付款方式"]}
+        title="匯入收入資料"
+        expectedHeaders={["單據編號", "日期", "姓名", "電話", "地址", "科目", "金額", "經手人", "付款方式"]}
         onValidateRow={validateImportRow}
         onConfirmImport={confirmImport}
+        sampleCsvUrl="/templates/income_template.csv"
       />
     </div>
   );

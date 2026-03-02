@@ -1,5 +1,14 @@
 // Supabase 資料庫型別定義
 
+export type Profile = {
+    id: string
+    email: string | null
+    role: 'admin' | 'user'
+    is_disabled: boolean
+    created_at: string
+    updated_at: string
+}
+
 export type Database = {
     public: {
         Tables: {
@@ -18,6 +27,11 @@ export type Database = {
                 Insert: Omit<BudgetAccount, 'id' | 'created_at'>
                 Update: Partial<Omit<BudgetAccount, 'id' | 'created_at'>>
             }
+            donors: {
+                Row: Donor
+                Insert: Omit<Donor, 'id' | 'created_at' | 'updated_at'>
+                Update: Partial<Omit<Donor, 'id' | 'created_at' | 'updated_at'>>
+            }
         }
     }
 }
@@ -26,6 +40,7 @@ export type Receipt = {
     id: number
     receipt_no: string
     date: string               // ISO date string
+    donor_id: string | null    // Link to donors table
     donor_name: string
     phone: string | null
     address: string | null
@@ -58,4 +73,16 @@ export type BudgetAccount = {
     budget_amount: number
     actual_amount: number
     created_at: string
+}
+
+export type Donor = {
+    id: string
+    name: string
+    phone: string | null
+    address: string | null
+    email: string | null
+    notes: string | null
+    tax_id: string | null
+    created_at: string
+    updated_at: string
 }

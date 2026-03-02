@@ -3,19 +3,19 @@ import { Modal } from "@/components/Modal";
 import {
   ChevronRight, Search, Bell, Plus, Landmark, Wallet, Lock,
   PiggyBank, TrendingUp, Minus, Sun, Flame, Filter, Download,
-  MoreHorizontal, Loader2, Trash2, Pencil,
+  MoreHorizontal, Loader2, Trash2, Pencil, Info,
 } from "lucide-react";
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "@/lib/supabase";
-import type { Transaction } from "@/types/database";
+import type { Transaction, Receipt } from "@/types/database";
 import { cn } from "@/utils/cn";
 
 // ─── Constants ──────────────────────────────────────────
-const CATEGORIES = ["光明燈", "平安燈", "一般捐款", "法會收入", "水電費", "活動支出", "修繕", "人事薪資", "其他"];
+const CATEGORIES = ["光明燈", "平安燈", "其他收入", "法會收入", "水電費", "活動支出", "修繕", "人事薪資", "其他"];
 const CATEGORY_BADGE: Record<string, string> = {
   "光明燈": "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400",
   "平安燈": "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400",
-  "一般捐款": "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400",
+  "其他收入": "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400",
   "法會收入": "bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400",
 };
 const inputCls = "w-full px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-900 dark:text-white focus:ring-2 focus:ring-red-600/30 focus:border-red-600 outline-none transition-all";
@@ -46,6 +46,13 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [totalTrx, setTotalTrx] = useState(0);
   const [search, setSearch] = useState("");
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  const [availableYears] = useState(() => {
+    const current = new Date().getFullYear();
+    const years = [];
+    for (let y = current + 1; y >= 2024; y--) years.push(y);
+    return years;
+  });
 
   // modal
   const [modalOpen, setModalOpen] = useState(false);
@@ -53,6 +60,18 @@ export default function Dashboard() {
   const [form, setForm] = useState(emptyTxn());
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
+
+  // stats
+  const [stats, setStats] = useState({
+    totalAssets: 0,
+    annualSurplus: 0,
+    monthlyData: [] as { month: string; income: number; expense: number }[],
+    projects: {
+      guangming: 0,
+      pingan: 0,
+      repair: 0,
+    }
+  });
 
   // delete
   const [deleteTarget, setDeleteTarget] = useState<Transaction | null>(null);
@@ -67,17 +86,80 @@ export default function Dashboard() {
     return () => document.removeEventListener("mousedown", fn);
   }, []);
 
+  const fetchStats = async () => {
+    // 1. Total Assets (Combined transactions and receipts)
+    const [{ data: tData }, { data: rData }] = await Promise.all([
+      supabase.from("transactions").select("amount").eq("status", "completed"),
+      supabase.from("receipts").select("amount").eq("status", "normal")
+    ]);
+
+    const txnSum = (tData as { amount: number }[] ?? []).reduce((sum, t) => sum + t.amount, 0);
+    const receiptSum = (rData as { amount: number }[] ?? []).reduce((sum, r) => sum + r.amount, 0);
+    const totalAssets = txnSum + receiptSum;
+
+    // 2. Annual Data (Filtered by selected year)
+    const [{ data: yearTxn }, { data: yearReceipt }] = await Promise.all([
+      supabase.from("transactions").select("*").eq("status", "completed").gte("date", `${selectedYear}-01-01`).lte("date", `${selectedYear}-12-31`),
+      supabase.from("receipts").select("*").eq("status", "normal").gte("date", `${selectedYear}-01-01`).lte("date", `${selectedYear}-12-31`)
+    ]);
+
+    const typedYearTxn = (yearTxn as Transaction[] ?? []);
+    const typedYearReceipt = (yearReceipt as Receipt[] ?? []);
+
+    // 3. Annual Surplus
+    // Income from receipts + Income from transactions - Expenses from transactions
+    // Actually receipts are always income (+). Transactions can be both.
+    const annualIncome = typedYearReceipt.reduce((sum, r) => sum + r.amount, 0) +
+      typedYearTxn.filter(t => t.amount > 0).reduce((sum, t) => sum + t.amount, 0);
+    const annualExpense = Math.abs(typedYearTxn.filter(t => t.amount < 0).reduce((sum, t) => sum + t.amount, 0));
+    const annualSurplus = annualIncome - annualExpense;
+
+    // 4. Monthly Data
+    const months = [];
+    for (let i = 1; i <= 12; i++) {
+      const mStr = `${selectedYear}-${String(i).padStart(2, "0")}`;
+      const mLabel = `${i}月`;
+
+      const mReceipts = typedYearReceipt.filter(r => r.date.startsWith(mStr));
+      const mTxns = typedYearTxn.filter(t => t.date.startsWith(mStr));
+
+      const income = mReceipts.reduce((sum, r) => sum + r.amount, 0) +
+        mTxns.filter(t => t.amount > 0).reduce((sum, t) => sum + t.amount, 0);
+      const expense = Math.abs(mTxns.filter(t => t.amount < 0).reduce((sum, t) => sum + t.amount, 0));
+
+      months.push({ month: mLabel, income, expense });
+    }
+
+    // 5. Projects (Annual) - Combining both if needed, but usually categories match
+    const guangming = typedYearReceipt.filter(r => r.category === "光明燈").reduce((sum, r) => sum + r.amount, 0) +
+      typedYearTxn.filter(t => t.category === "光明燈" && t.amount > 0).reduce((sum, t) => sum + t.amount, 0);
+    const pingan = typedYearReceipt.filter(r => r.category === "平安燈").reduce((sum, r) => sum + r.amount, 0) +
+      typedYearTxn.filter(t => t.category === "平安燈" && t.amount > 0).reduce((sum, t) => sum + t.amount, 0);
+    const repair = typedYearTxn.filter(t => t.category === "修繕").reduce((sum, t) => sum + Math.abs(t.amount), 0);
+
+    setStats({
+      totalAssets,
+      annualSurplus,
+      monthlyData: months,
+      projects: { guangming, pingan, repair }
+    });
+  };
+
   const fetchTxn = async () => {
     setLoading(true);
     let q = supabase.from("transactions").select("*", { count: "exact" })
+      .gte("date", `${selectedYear}-01-01`)
+      .lte("date", `${selectedYear}-12-31`)
       .order("date", { ascending: false }).limit(20);
+
     if (search.trim()) q = q.or(`description.ilike.%${search}%,category.ilike.%${search}%`);
     const { data, count, error } = await q;
     if (!error) { setTransactions(data ?? []); setTotalTrx(count ?? 0); }
     setLoading(false);
+    fetchStats();
   };
 
-  useEffect(() => { fetchTxn(); }, [search]);
+  useEffect(() => { fetchTxn(); }, [search, selectedYear]);
 
   const openAdd = () => {
     setEditTarget(null);
@@ -110,7 +192,7 @@ export default function Dashboard() {
     if (isNaN(amt) || amt <= 0) { setFormError("金額必須為正數"); return; }
     setSaving(true); setFormError("");
 
-    const payload = {
+    const payload: any = {
       txn_no: form.txn_no.trim() || `TRX-${Date.now()}`,
       date: form.date,
       description: form.description.trim(),
@@ -120,8 +202,8 @@ export default function Dashboard() {
     };
 
     const { error } = editTarget
-      ? await supabase.from("transactions").update(payload).eq("id", editTarget.id)
-      : await supabase.from("transactions").insert(payload);
+      ? await (supabase.from("transactions") as any).update(payload).eq("id", editTarget.id)
+      : await (supabase.from("transactions") as any).insert(payload);
 
     if (error) { setFormError(error.message); setSaving(false); return; }
     setModalOpen(false);
@@ -158,6 +240,16 @@ export default function Dashboard() {
                 onChange={e => setSearch(e.target.value)}
               />
             </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-slate-500 hidden sm:block">年度:</span>
+              <select
+                className="bg-slate-100 dark:bg-slate-800 border-none rounded-lg text-sm px-3 py-2 focus:ring-2 focus:ring-red-700 transition-all outline-none"
+                value={selectedYear}
+                onChange={e => setSelectedYear(Number(e.target.value))}
+              >
+                {availableYears.map(y => <option key={y} value={y}>{y} 年度</option>)}
+              </select>
+            </div>
             <div className="flex gap-2">
               <button className="flex items-center justify-center h-10 w-10 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 relative">
                 <Bell className="w-5 h-5" />
@@ -176,10 +268,10 @@ export default function Dashboard() {
             {/* KPI Cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
               {[
-                { label: "總資產", value: "$1,250,400", change: "+5.2% 較上月", icon: <Landmark className="w-8 h-8 text-red-700 bg-red-700/10 p-1.5 rounded-lg" />, color: "text-emerald-600" },
-                { label: "活期存款", value: "$450,200", change: "+1.2% 較上月", icon: <Wallet className="w-8 h-8 text-red-700 bg-red-700/10 p-1.5 rounded-lg" />, color: "text-emerald-600" },
-                { label: "定期存款", value: "$800,200", change: "0.0% 無變動", icon: <Lock className="w-8 h-8 text-red-700 bg-red-700/10 p-1.5 rounded-lg" />, color: "text-slate-500" },
-                { label: "年度累計盈餘", value: "$125,000", change: "+12.5% 較去年", icon: <PiggyBank className="w-8 h-8 text-red-700 bg-red-700/10 p-1.5 rounded-lg" />, color: "text-emerald-600" },
+                { label: "總資產", value: `$${stats.totalAssets.toLocaleString()}`, change: "即時更新", icon: <Landmark className="w-8 h-8 text-red-700 bg-red-700/10 p-1.5 rounded-lg" />, color: "text-emerald-600" },
+                { label: "活期存款", value: `$${(stats.totalAssets * 0.4).toLocaleString()}`, change: "估算值 (40%)", icon: <Wallet className="w-8 h-8 text-red-700 bg-red-700/10 p-1.5 rounded-lg" />, color: "text-emerald-600" },
+                { label: "定期存款", value: `$${(stats.totalAssets * 0.6).toLocaleString()}`, change: "估算值 (60%)", icon: <Lock className="w-8 h-8 text-red-700 bg-red-700/10 p-1.5 rounded-lg" />, color: "text-slate-500" },
+                { label: "年度累計盈餘", value: `$${stats.annualSurplus.toLocaleString()}`, change: `${selectedYear} 年度`, icon: <PiggyBank className="w-8 h-8 text-red-700 bg-red-700/10 p-1.5 rounded-lg" />, color: "text-emerald-600" },
               ].map(k => (
                 <div key={k.label} className="bg-white dark:bg-slate-900 rounded-xl p-6 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-4">
                   <div className="flex items-center justify-between"><span className="text-slate-500 text-sm font-medium">{k.label}</span>{k.icon}</div>
@@ -202,23 +294,42 @@ export default function Dashboard() {
                     <p className="text-sm text-slate-500">本財年每月收支明細</p>
                   </div>
                   <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 p-1 rounded-lg self-start">
-                    <button className="px-3 py-1.5 text-xs font-semibold rounded bg-white dark:bg-slate-700 shadow-sm">12 個月</button>
-                    <button className="px-3 py-1.5 text-xs font-medium rounded text-slate-500 hover:bg-white/50">30 天</button>
+                    <button className="px-3 py-1.5 text-xs font-semibold rounded bg-white dark:bg-slate-700 shadow-sm">{selectedYear} 全年</button>
+                    <span className="px-3 py-1.5 text-xs font-medium text-slate-400">月度分析</span>
                   </div>
                 </div>
                 <div className="flex-1 flex items-end justify-between gap-2 h-64 w-full mt-4 px-2">
-                  {[
-                    { month: "1月", inc: 40, exp: 30 }, { month: "2月", inc: 65, exp: 45 }, { month: "3月", inc: 55, exp: 40 },
-                    { month: "4月", inc: 80, exp: 35 }, { month: "5月", inc: 60, exp: 50 }, { month: "6月", inc: 90, exp: 45 }, { month: "7月", inc: 75, exp: 40 },
-                  ].map(d => (
-                    <div key={d.month} className="flex flex-col items-center gap-2 group w-full h-full justify-end">
-                      <div className="relative w-full max-w-[40px] flex items-end h-full gap-1">
-                        <div className="w-1/2 bg-emerald-500 rounded-t-sm opacity-80 group-hover:opacity-100 transition-opacity" style={{ height: `${d.inc}%` }} />
-                        <div className="w-1/2 bg-amber-500 rounded-t-sm opacity-80 group-hover:opacity-100 transition-opacity" style={{ height: `${d.exp}%` }} />
+                  {stats.monthlyData.map(d => {
+                    const max = Math.max(...stats.monthlyData.map(m => Math.max(m.income, m.expense, 100)));
+                    const incPct = (d.income / max) * 100;
+                    const expPct = (d.expense / max) * 100;
+                    return (
+                      <div key={d.month} className="flex flex-col items-center gap-2 group w-full h-full justify-end relative">
+                        <div className="relative w-full max-w-[40px] flex items-end h-full gap-1">
+                          <div className="w-1/2 bg-emerald-500 rounded-t-sm opacity-80 group-hover:opacity-100 transition-opacity cursor-pointer" style={{ height: `${incPct}%` }} />
+                          <div className="w-1/2 bg-amber-500 rounded-t-sm opacity-80 group-hover:opacity-100 transition-opacity cursor-pointer" style={{ height: `${expPct}%` }} />
+                        </div>
+                        <span className="text-xs font-medium text-slate-400 group-hover:text-slate-600">{d.month}</span>
+
+                        {/* Custom Tooltip */}
+                        <div className="absolute bottom-full left-1/2 -ms-20 mb-2 w-40 bg-slate-900 text-white p-3 rounded-lg text-xs shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50">
+                          <div className="font-bold border-b border-slate-700 pb-1.5 mb-1.5 flex justify-between items-center">
+                            <span>{selectedYear} {d.month}</span>
+                            <Info className="w-3 h-3 text-slate-400" />
+                          </div>
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="text-slate-400">收入:</span>
+                            <span className="text-emerald-400 font-bold">${d.income.toLocaleString()}</span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <span className="text-slate-400">支出:</span>
+                            <span className="text-amber-400 font-bold">${d.expense.toLocaleString()}</span>
+                          </div>
+                          <div className="absolute bottom-[-6px] left-1/2 -ml-1 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[6px] border-t-slate-900" />
+                        </div>
                       </div>
-                      <span className="text-xs font-medium text-slate-400 group-hover:text-slate-600">{d.month}</span>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
                 <div className="flex items-center justify-center gap-6 mt-6">
                   <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-full bg-emerald-500" /><span className="text-xs font-medium text-slate-600 dark:text-slate-300">收入</span></div>
@@ -234,26 +345,32 @@ export default function Dashboard() {
                 </div>
                 <div className="flex flex-col gap-6">
                   {[
-                    { name: "光明燈", icon: <Sun className="w-5 h-5" />, iconBg: "bg-amber-100 dark:bg-amber-900/30 text-amber-600", target: 50000, pct: 82, bar: "from-amber-400 to-amber-600" },
-                    { name: "平安燈", icon: <Flame className="w-5 h-5" />, iconBg: "bg-red-100 dark:bg-red-900/30 text-red-600", target: 30000, pct: 45, bar: "from-red-400 to-red-600" },
-                    { name: "修繕基金", icon: <Landmark className="w-5 h-5" />, iconBg: "bg-red-700/10 text-red-700", target: 200000, pct: 15, bar: "from-red-700 to-red-800" },
-                  ].map(p => (
-                    <div key={p.name} className="flex flex-col gap-3">
-                      <div className="flex items-center gap-3">
-                        <div className={`${p.iconBg} p-2 rounded-lg`}>{p.icon}</div>
-                        <div className="flex-1">
-                          <h4 className="text-sm font-bold">{p.name}</h4>
-                          <p className="text-xs text-slate-500">目標: ${p.target.toLocaleString()}</p>
+                    { name: "光明燈", icon: <Sun className="w-5 h-5" />, iconBg: "bg-amber-100 dark:bg-amber-900/30 text-amber-600", target: 50000, actual: stats.projects.guangming, bar: "from-amber-400 to-amber-600" },
+                    { name: "平安燈", icon: <Flame className="w-5 h-5" />, iconBg: "bg-red-100 dark:bg-red-900/30 text-red-600", target: 30000, actual: stats.projects.pingan, bar: "from-red-400 to-red-600" },
+                    { name: "修繕基金", icon: <Landmark className="w-5 h-5" />, iconBg: "bg-red-700/10 text-red-700", target: 200000, actual: stats.projects.repair, bar: "from-red-700 to-red-800" },
+                  ].map(p => {
+                    const pct = Math.min(Math.round((p.actual / p.target) * 100), 100);
+                    return (
+                      <div key={p.name} className="flex flex-col gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className={`${p.iconBg} p-2 rounded-lg`}>{p.icon}</div>
+                          <div className="flex-1">
+                            <h4 className="text-sm font-bold">{p.name}</h4>
+                            <div className="flex justify-between items-center">
+                              <p className="text-xs text-slate-500">目標: ${p.target.toLocaleString()}</p>
+                              <p className="text-xs font-medium text-slate-400">${p.actual.toLocaleString()}</p>
+                            </div>
+                          </div>
+                          <span className="text-sm font-bold">{pct}%</span>
                         </div>
-                        <span className="text-sm font-bold">{p.pct}%</span>
+                        <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-2">
+                          <div className={`bg-gradient-to-r ${p.bar} h-2 rounded-full transition-all duration-500`} style={{ width: `${pct}%` }} />
+                        </div>
                       </div>
-                      <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-2">
-                        <div className={`bg-gradient-to-r ${p.bar} h-2 rounded-full`} style={{ width: `${p.pct}%` }} />
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                   <div className="mt-auto pt-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs text-slate-500">
-                    <span>已募得總額</span><span className="font-bold text-slate-900 dark:text-white text-sm">$63,500</span>
+                    <span>專案募得總額</span><span className="font-bold text-slate-900 dark:text-white text-sm">${(stats.projects.guangming + stats.projects.pingan + stats.projects.repair).toLocaleString()}</span>
                   </div>
                 </div>
               </div>

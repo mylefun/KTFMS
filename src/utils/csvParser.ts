@@ -10,17 +10,25 @@ export function parseCSV(csvText: string): Record<string, string>[] {
     const lines = csvText.split(/\r?\n/).filter(line => line.trim());
     if (lines.length < 2) return result;
 
-    // 2. Parse headers
-    const headers = parseCSVSplit(lines[0]).map(h => h.trim());
+    // 2. Detect delimiter (comma or tab)
+    const firstLine = lines[0];
+    const commaCount = (firstLine.match(/,/g) || []).length;
+    const tabCount = (firstLine.match(/\t/g) || []).length;
+    const delimiter = tabCount > commaCount ? "\t" : ",";
 
-    // 3. Parse data rows
+    // 3. Parse headers
+    const headers = parseCSVSplit(lines[0], delimiter).map(h => h.trim());
+
+    // 4. Parse data rows
     for (let i = 1; i < lines.length; i++) {
-        const rowRaw = parseCSVSplit(lines[i]);
+        const rowRaw = parseCSVSplit(lines[i], delimiter);
         const rowObj: Record<string, string> = {};
 
         // Default to empty string if missing column data
         for (let j = 0; j < headers.length; j++) {
-            rowObj[headers[j]] = rowRaw[j]?.trim() ?? "";
+            const val = rowRaw[j]?.trim();
+            // If the value is empty, explicitly set to empty string to avoid "undefined" mapping
+            rowObj[headers[j]] = val || "";
         }
         result.push(rowObj);
     }
@@ -29,9 +37,9 @@ export function parseCSV(csvText: string): Record<string, string>[] {
 }
 
 /**
- * Splits a CSV string by comma, respecting double quotes.
+ * Splits a CSV string by delimiter, respecting double quotes.
  */
-function parseCSVSplit(text: string): string[] {
+function parseCSVSplit(text: string, delimiter: string = ","): string[] {
     const result: string[] = [];
     let currentStr = "";
     let insideQuotes = false;
@@ -47,7 +55,7 @@ function parseCSVSplit(text: string): string[] {
             } else {
                 insideQuotes = !insideQuotes;
             }
-        } else if (char === ',' && !insideQuotes) {
+        } else if (char === delimiter && !insideQuotes) {
             result.push(currentStr);
             currentStr = "";
         } else {

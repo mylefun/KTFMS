@@ -37,6 +37,7 @@ export function ImportModal({
     const [rows, setRows] = useState<ParsedRow[]>([]);
     const [importing, setImporting] = useState(false);
     const [importDone, setImportDone] = useState(false);
+    const [importError, setImportError] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const handleReset = () => {
@@ -44,6 +45,7 @@ export function ImportModal({
         setRows([]);
         setImporting(false);
         setImportDone(false);
+        setImportError(null);
         setParsing(false);
         if (fileInputRef.current) fileInputRef.current.value = "";
     };
@@ -106,9 +108,15 @@ export function ImportModal({
         const readyRows = rows.filter(r => r.status === 'ready').map(r => r.data);
         if (readyRows.length === 0) return;
         setImporting(true);
-        await onConfirmImport(readyRows);
-        setImporting(false);
-        setImportDone(true);
+        setImportError(null);
+        try {
+            await onConfirmImport(readyRows);
+            setImporting(false);
+            setImportDone(true);
+        } catch (err: any) {
+            setImportError(err.message || "匯入過程中發生未知的錯誤");
+            setImporting(false);
+        }
     };
 
     const readyCount = rows.filter(r => r.status === 'ready').length;
@@ -214,6 +222,16 @@ export function ImportModal({
                             </div>
                         </div>
 
+                        {importError && (
+                            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/30 p-3 rounded-lg flex items-start gap-2 text-red-700 dark:text-red-400 text-sm">
+                                <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                                <div>
+                                    <p className="font-bold text-red-800 dark:text-red-300">匯入作業失敗</p>
+                                    <p>{importError}</p>
+                                </div>
+                            </div>
+                        )}
+
                         <div className="flex gap-3 justify-end mt-2">
                             <button
                                 onClick={handleReset}
@@ -250,7 +268,6 @@ export function ImportModal({
                         </button>
                     </div>
                 )}
-
             </div>
         </Modal>
     );

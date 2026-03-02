@@ -1,3 +1,4 @@
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { Modal } from "@/components/Modal";
 import { ImportModal, ImportRowStatus } from "@/components/ImportModal";
@@ -6,11 +7,9 @@ import {
   MoreVertical, Info, X, CheckCircle2, AlertTriangle,
   ChevronLeft, ChevronRight, Loader2, Pencil, Trash2,
 } from "lucide-react";
-import { useState, useEffect, useCallback, useRef } from "react";
 import { cn } from "@/utils/cn";
 import { supabase } from "@/lib/supabase";
 import type { Transaction } from "@/types/database";
-
 // ─── Constants ───────────────────────────────────────────────
 const CATEGORIES = ["水電瓦斯", "辦公雜支", "法會支出", "修繕工程", "其他"];
 const EXPENDITURE_STATUSES = ["completed", "pending"];
@@ -148,8 +147,8 @@ export default function Expenses() {
     };
 
     const { error } = editTarget
-      ? await supabase.from("transactions").update(payload).eq("id", editTarget.id)
-      : await supabase.from("transactions").insert(payload);
+      ? await (supabase.from("transactions") as any).update(payload).eq("id", editTarget.id)
+      : await (supabase.from("transactions") as any).insert(payload);
 
     if (error) { setFormError(error.message); setSaving(false); return; }
     setModalOpen(false);
@@ -198,8 +197,9 @@ export default function Expenses() {
   };
 
   const confirmImport = async (validRows: Record<string, string>[]) => {
-    const payloads = validRows.map(row => ({
-      txn_no: row["單據序號"]?.trim() || `EXP-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    const now = Date.now();
+    const payloads = validRows.map((row, index) => ({
+      txn_no: row["單據序號"]?.trim() || `EXP-${now}-${index}-${Math.floor(Math.random() * 10000)}`,
       date: row["日期"],
       description: row["項目說明"]?.trim(),
       category: row["科目"],
@@ -208,7 +208,12 @@ export default function Expenses() {
     }));
 
     // Batch insert
-    await supabase.from("transactions").insert(payloads);
+    const { error } = await (supabase.from("transactions") as any).insert(payloads);
+    if (error) throw error;
+
+    // Reset state to ensure visibility
+    setActiveTab("所有支出");
+    setPage(1);
     fetchExpenses();
   };
 
@@ -233,10 +238,10 @@ export default function Expenses() {
               onClick={() => setImportOpen(true)}
               className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-medium text-sm transition-colors"
             >
-              <Upload className="w-5 h-5" />匯入資料
+              <Download className="w-5 h-5" />匯入資料
             </button>
             <button className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-medium text-sm transition-colors">
-              <Download className="w-5 h-5" />匯出資料
+              <Upload className="w-5 h-5" />匯出資料
             </button>
             <button
               onClick={openAdd}
@@ -263,34 +268,20 @@ export default function Expenses() {
             ))}
           </div>
 
-          {/* ── Filters ── */}
-          <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 mb-6">
-            <div className="relative group w-full xl:w-80">
-              <Search className="absolute left-3 top-2.5 w-5 h-5 text-slate-400 group-focus-within:text-red-700 transition-colors" />
-              <input
-                className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-red-700/20 focus:border-red-700 transition-all text-sm outline-none"
-                placeholder="搜尋支出單號或項目說明..."
-                value={search}
-                onChange={e => { setSearch(e.target.value); setPage(1); }}
-              />
-            </div>
-            <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-1 rounded-lg overflow-x-auto max-w-full gap-0.5">
-              {FILTER_TABS.map(tab => (
-                <button
-                  key={tab}
-                  onClick={() => { setActiveTab(tab); setPage(1); }}
-                  className={cn("px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-colors",
-                    activeTab === tab
-                      ? "bg-white dark:bg-slate-700 shadow-sm text-red-700 font-bold"
-                      : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
-                  )}
-                >{tab}</button>
-              ))}
-            </div>
-          </div>
-
           {/* ── Table ── */}
-          <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden">
+          <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col">
+            <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white/50 dark:bg-slate-900/50">
+              <h3 className="font-bold text-lg text-slate-800 dark:text-slate-200">支出明細紀錄</h3>
+              <div className="relative group w-full sm:w-72">
+                <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400 group-focus-within:text-red-700 transition-colors" />
+                <input
+                  className="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-red-700/20 focus:border-red-700 transition-all text-xs outline-none"
+                  placeholder="搜尋支出單號或項目說明..."
+                  value={search}
+                  onChange={e => { setSearch(e.target.value); setPage(1); }}
+                />
+              </div>
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-500 border-b border-slate-200 dark:border-slate-800">
@@ -529,6 +520,7 @@ export default function Expenses() {
         expectedHeaders={["單據序號", "日期", "項目說明", "科目", "金額", "狀態"]}
         onValidateRow={validateImportRow}
         onConfirmImport={confirmImport}
+        sampleCsvUrl="/templates/expenses_template.csv"
       />
     </div>
   );

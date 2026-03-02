@@ -5,3 +5,7 @@
   --font-sans: "Noto Sans TC", "Manrope", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Noto Sans TC", "Manrope", ui-sans-serif, system-ui, sans-serif;
 }
+
+:root.dark body {
+  background-color: #0c111d !important; /* A dark color to verify */
+}
